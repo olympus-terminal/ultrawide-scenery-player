@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# scenery: play silent (or muted) scenery, walking, hiking and drone videos full
+# screen with mpv, with your own soundtrack. 360 videos fill an ultrawide screen
+# (see vr360_ultrawide.lua). Everything else is passed to mpv unchanged.
+#
+# Usage: scenery [-s SOUNDTRACK] [--keep-audio] [--loop] FILE|DIR|URL ... [mpv options]
+#   -s, --soundtrack PATH  music file, folder or playlist, played shuffled and
+#                          looped by a second mpv until the video player exits
+#   --keep-audio           keep the videos' own sound (default: video audio off)
+#   --loop                 loop the video playlist forever
+#   -h, --help             this text
+# Examples:
+#   scenery ~/Videos/forest_walk_4k.mp4
+#   scenery -s ~/Music/ambient/ --loop ~/Videos/scenery/
+#   scenery --keep-audio --script-opts=vr360-w=5120,vr360-h=1440 rainforest_360.webm
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+
+soundtrack="" keep_audio=0 loop=0 pass=()
+while (($#)); do
+    case "$1" in
+        -s|--soundtrack) [[ $# -ge 2 ]] || { echo "scenery: $1 needs a path" >&2; exit 2; }
+                         soundtrack="$2"; shift 2 ;;
+        --soundtrack=*)  soundtrack="${1#*=}"; shift ;;
+        --keep-audio)    keep_audio=1; shift ;;
+        --loop)          loop=1; shift ;;
+        -h|--help)       usage; exit 0 ;;
+        *)               pass+=("$1"); shift ;;
+    esac
+done
+((${#pass[@]})) || { usage >&2; exit 2; }
+
+# conda (and some other environments) set __EGL_VENDOR_LIBRARY_DIRS to a folder
+# holding only Mesa's EGL vendor file. That hides the NVIDIA driver: mpv then gets
+# a software (llvmpipe) OpenGL context, rejects it, tries DRM on the integrated
+# GPU ("Permission denied") and lands on a fallback. Drop it for mpv only.
+unset __EGL_VENDOR_LIBRARY_DIRS
+
+opts=(
+    --hwdec=auto-safe              # NVDEC / VAAPI / VideoToolbox when available
+    --vo=gpu-next
+    --video-sync=display-resample  # smooth 59.94/60 fps on a 60 Hz screen
+    --fullscreen
+    --cache=yes                    # large read-ahead: smooth 4K from USB disks
+    --demuxer-max-bytes=1GiB
+    --demuxer-readahead-secs=300
+    --script="$here/vr360_ultrawide.lua"
+)
+((keep_audio)) || opts+=(--aid=no)
+((loop)) && opts+=(--loop-playlist=inf)
+
+music_pid=""
+if [[ -n "$soundtrack" ]]; then
+    mpv --no-video --no-terminal --shuffle --loop-playlist=inf -- "$soundtrack" &
+    music_pid=$!
+    trap '[[ -n "$music_pid" ]] && kill "$music_pid" 2>/dev/null || true' EXIT INT TERM
+fi
+
+status=0
+mpv "${opts[@]}" "${pass[@]}" || status=$?
+exit "$status"
